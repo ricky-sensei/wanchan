@@ -1,17 +1,19 @@
 {
   "expo": {
-    "name": "wanchan2",
-    "slug": "wanchan2",
+    "name": "MyAwesomeApp",
+    "slug": "MyAwesomeApp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yourcompany.MyAwesomeApp",
@@ -26,7 +28,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "package": "com.yourcompany.MyAwesomeApp"
     },
     "web": {

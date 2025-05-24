@@ -2,14 +2,13 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as Notifications from 'expo-notifications';
-import { db } from '../firebaseConfig'; // Firebaseからdbをインポート
+import { db, auth } from '../firebaseConfig'; // authもインポート
+import { Platform } from 'react-native'; // Platformをインポート
 
 const LOCATION_TRACKING = 'location-tracking';
-const NOTIFICATION_TASK = 'notification-task';
 
 // --- 設定値 ---
 const NOTIFICATION_COOLDOWN_TIME = 20 * 60 * 1000; // 20分 (ミリ秒)
-const LOCATION_UPDATE_INTERVAL = 20 * 60 * 1000; // 20分後に再開
 const NOTIFICATION_RADIUS_KM = 10; // 半径10km
 
 // 2点間の距離を計算する関数 (ヒュベニの公式の簡易版 - 概算)
@@ -32,9 +31,8 @@ const schedulePushNotification = async (title, body) => {
     content: {
       title: title,
       body: body,
-      data: { someData: 'goes here' },
+      data: { type: 'nearby_attractive_user' },
     },
-    // 10分以内のランダムなタイミングで通知
     trigger: { seconds: Math.floor(Math.random() * (10 * 60)) + 1 }, // 1秒から10分まで
   });
 };
@@ -48,102 +46,130 @@ TaskManager.defineTask(LOCATION_TRACKING, async ({ data, error }) => {
   if (data) {
     const { locations } = data;
     const currentLocation = locations[0];
-    console.log('Background Location Update:', currentLocation.coords);
+    console.log('Background Location Update:', currentLocation.coords.latitude, currentLocation.coords.longitude);
+
+    // ログインしているユーザーのUIDとユーザーIDを取得
+    const user = auth.currentUser;
+    if (!user) {
+      console.log('No user logged in, skipping background location check.');
+      return;
+    }
+    let myFirebaseUid = user.uid;
+    let myUserId = null;
+
+    try {
+      const userProfileSnapshot = await db.collection('users').where('firebaseUid', '==', myFirebaseUid).limit(1).get();
+      if (!userProfileSnapshot.empty) {
+        myUserId = userProfileSnapshot.docs[0].data().userId;
+      } else {
+        console.warn("User profile not found in Firestore for current Firebase UID.");
+        return; // プロフィールが見つからなければ処理を中断
+      }
+    } catch (profileError) {
+      console.error("Error fetching user profile in background:", profileError);
+      return;
+    }
 
     // ユーザーがよくいる場所（ここではログインユーザーの平均座標）を取得
-    // 実際にはFirestoreからログインユーザーのデータを取得する必要がある
-    // 今回はデモのため、MyPageScreenと同様にダミーまたは仮定のユーザーIDで処理
     let myAverageLocation = null;
     try {
-      const myUserId = 'dummy_user_id'; // 実際にはストレージなどから取得
       const myRecordsSnapshot = await db.collection('records').where('userId', '==', myUserId).get();
       if (!myRecordsSnapshot.empty) {
         let totalLat = 0;
         let totalLon = 0;
         let count = 0;
         myRecordsSnapshot.forEach(doc => {
-          const data = doc.data();
-          totalLat += data.latitude;
-          totalLon += data.longitude;
+          const recordData = doc.data();
+          totalLat += recordData.latitude;
+          totalLon += recordData.longitude;
           count++;
         });
         myAverageLocation = {
           latitude: totalLat / count,
           longitude: totalLon / count,
         };
+        console.log('My average location:', myAverageLocation);
+      } else {
+        console.log('No records found for current user, cannot calculate average location.');
+        // 自分の記録がない場合は通知しない
+        return;
       }
     } catch (firebaseError) {
-      console.error('FirebaseからMyRecords取得エラー:', firebaseError);
+      console.error('FirebaseからMyRecords取得エラー (Background):', firebaseError);
+      return;
     }
 
-    if (myAverageLocation) {
-      const distToMyAverage = getDistance(
-        currentLocation.coords.latitude,
-        currentLocation.coords.longitude,
-        myAverageLocation.latitude,
-        myAverageLocation.longitude
-      );
+    // 現在地が自分のよくいる場所から10km以内に入った場合
+    const distToMyAverage = getDistance(
+      currentLocation.coords.latitude,
+      currentLocation.coords.longitude,
+      myAverageLocation.latitude,
+      myAverageLocation.longitude
+    );
+    console.log(`Distance to my average location: ${distToMyAverage.toFixed(2)} km`);
 
-      // 自分のよくいる場所から10km以内に入った場合
-      if (distToMyAverage <= NOTIFICATION_RADIUS_KM) {
-        console.log('Within 10km of my average location. Checking for other users...');
+    if (distToMyAverage <= NOTIFICATION_RADIUS_KM) {
+      console.log('Within 10km of my average location. Checking for other users...');
 
-        // 他のユーザーの直近の記録を取得
-        const otherRecordsSnapshot = await db.collection('records')
-          .where('timestamp', '>', new Date(Date.now() - NOTIFICATION_COOLDOWN_TIME * 2)) // ある程度の期間内の記録
-          .orderBy('timestamp', 'desc')
-          .get();
+      const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000); // 20分前
 
-        let foundNearbyAttractiveUser = false;
-        for (const doc of otherRecordsSnapshot.docs) {
-          const record = doc.data();
-          // TODO: 自分のユーザーIDと異なるユーザーの記録のみを対象にする
-          // if (record.userId === myUserId) continue;
+      // 他のユーザーの直近の記録を取得 (過去20分以内の投稿を対象)
+      const otherRecordsSnapshot = await db.collection('records')
+        .where('timestamp', '>', twentyMinutesAgo)
+        .orderBy('timestamp', 'desc')
+        .get();
 
-          const distFromOtherUser = getDistance(
-            currentLocation.coords.latitude,
-            currentLocation.coords.longitude,
-            record.latitude,
-            record.longitude
-          );
+      let foundNearbyAttractiveUser = false;
+      for (const doc of otherRecordsSnapshot.docs) {
+        const record = doc.data();
+        // 自分のユーザーIDと異なるユーザーの記録のみを対象
+        if (record.userId === myUserId) continue;
 
-          if (distFromOtherUser <= NOTIFICATION_RADIUS_KM) {
-            // 他のユーザーが10km以内にいる！
-            // TODO: ここで「イケメンまたはイケジョ」の判定ロジックを入れる
-            // 例えば、usersコレクションから性別情報を取得して判定するなど
-            // 今回はシンプルに「他のユーザーがいる」と判定
-            foundNearbyAttractiveUser = true;
-            break;
+        const distFromOtherUser = getDistance(
+          currentLocation.coords.latitude,
+          currentLocation.coords.longitude,
+          record.latitude,
+          record.longitude
+        );
+        console.log(`Distance from other user (${record.userId}): ${distFromOtherUser.toFixed(2)} km`);
+
+
+        if (distFromOtherUser <= NOTIFICATION_RADIUS_KM) {
+          // 他のユーザーが10km以内にいる！
+          // TODO: ここで「イケメンまたはイケジョ」の判定ロジックを入れる（例: 性別判定など）
+          // 現時点では、他のユーザーであればOKとする
+          foundNearbyAttractiveUser = true;
+          break;
+        }
+      }
+
+      if (foundNearbyAttractiveUser) {
+        console.log('Nearby attractive user found! Scheduling notification.');
+        await schedulePushNotification(
+          '近くにいるかも！',
+          'あなたの場所の近くに、イケメンまたはイケジョがいるかも'
+        );
+
+        // 通知を出したら20分間は通知を出さないようにし、現在地の取得も中止し、現在地情報を初期化
+        // 現在地情報の初期化は、stopLocationUpdatesAsyncで間接的に行われる
+        await Location.stopLocationUpdatesAsync(LOCATION_TRACKING);
+        console.log('Location tracking stopped for 20 minutes.');
+
+        // 20分後に再度位置情報トラッキングを開始するタスクをスケジュール
+        setTimeout(async () => {
+          const hasPermission = await Location.hasBackgroundPermissionsAsync();
+          if (hasPermission) {
+            await Location.startLocationUpdatesAsync(LOCATION_TRACKING, {
+              accuracy: Location.Accuracy.Balanced,
+              timeInterval: 60000, // 1分ごとに更新（バッテリー考慮）
+              distanceInterval: 100, // 100m移動したら更新
+              deferredUpdatesInterval: 1000, // Android: バッテリー最適化
+            });
+            console.log('Location tracking resumed after 20 minutes.');
+          } else {
+            console.warn('Background location permission not granted, cannot resume tracking.');
           }
-        }
-
-        if (foundNearbyAttractiveUser) {
-          console.log('Nearby attractive user found! Scheduling notification.');
-          await schedulePushNotification(
-            '近くにいるかも！',
-            'あなたの場所の近くに、イケメンまたはイケジョがいるかも'
-          );
-
-          // 通知を出したら20分間は通知を出さないようにし、現在地の取得も中止し、現在地情報を初期化
-          await Location.stopLocationUpdatesAsync(LOCATION_TRACKING);
-          console.log('Location tracking stopped for 20 minutes.');
-
-          // 20分後に再度位置情報トラッキングを開始するタスクをスケジュール
-          setTimeout(async () => {
-            const hasPermission = await Location.hasBackgroundPermissionsAsync();
-            if (hasPermission) {
-              await Location.startLocationUpdatesAsync(LOCATION_TRACKING, {
-                accuracy: Location.Accuracy.Balanced,
-                timeInterval: 60000, // 1分ごとに更新（バッテリー考慮）
-                distanceInterval: 100, // 100m移動したら更新
-                deferredUpdatesInterval: 1000, // Android: バッテリー最適化
-              });
-              console.log('Location tracking resumed after 20 minutes.');
-            } else {
-              console.warn('Background location permission not granted, cannot resume tracking.');
-            }
-          }, NOTIFICATION_COOLDOWN_TIME); // 20分後
-        }
+        }, NOTIFICATION_COOLDOWN_TIME); // 20分後
       }
     }
   }
@@ -151,6 +177,13 @@ TaskManager.defineTask(LOCATION_TRACKING, async ({ data, error }) => {
 
 // バックグラウンドタスクを開始/停止するヘルパー関数
 export const startLocationTracking = async () => {
+  // すでに開始している場合は何もしない
+  const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TRACKING);
+  if (hasStarted) {
+    console.log('Location tracking already started.');
+    return;
+  }
+
   const { status } = await Location.requestBackgroundPermissionsAsync();
   if (status === 'granted') {
     await Location.startLocationUpdatesAsync(LOCATION_TRACKING, {
@@ -192,11 +225,12 @@ export const registerForPushNotificationsAsync = async () => {
     finalStatus = status;
   }
   if (finalStatus !== 'granted') {
+    // 通知権限がない場合、ユーザーにアラートを出す
     Alert.alert('通知権限', '通知を受け取るために、設定で通知を許可してください。');
     return;
   }
   token = (await Notifications.getExpoPushTokenAsync()).data;
-  console.log(token);
+  console.log('Expo Push Token:', token);
 
   return token;
 };

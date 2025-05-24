@@ -6,10 +6,13 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 import HomeScreen from './screens/HomeScreen';
-import RegisterScreen from './screens/RegisterScreen';
+import AuthScreen from './screens/AuthScreen'; // RegisterScreenからAuthScreenに名前変更
 import RecordScreen from './screens/RecordScreen';
 import MyPageScreen from './screens/MyPageScreen';
+
 import { startLocationTracking, registerForPushNotificationsAsync } from './utils/backgroundLocationTask';
+import { AuthProvider, useAuth } from './contexts/AuthContext'; // AuthProviderとuseAuthをインポート
+import { auth } from './firebaseConfig'; // authをインポート
 
 // 通知ハンドラの設定
 Notifications.setNotificationHandler({
@@ -22,9 +25,23 @@ Notifications.setNotificationHandler({
 
 const Stack = createStackNavigator();
 
-export default function App() {
+// メインのナビゲーターコンポーネント
+const AppNavigator = () => { // ここが問題の箇所かもしれない
   const notificationListener = useRef();
   const responseListener = useRef();
+
+  // テスト用: アプリ起動時に毎回ログイン情報をリセット
+  useEffect(() => {
+    const resetLogin = async () => {
+      try {
+        await auth.signOut();
+        console.log("App started: User signed out for testing.");
+      } catch (error) {
+        console.error("Error signing out on app start:", error);
+      }
+    };
+    resetLogin();
+  }, []);
 
   useEffect(() => {
     // 通知権限のリクエストとバックグラウンドタスクの開始
@@ -51,10 +68,19 @@ export default function App() {
     <NavigationContainer>
       <Stack.Navigator initialRouteName="Home">
         <Stack.Screen name="Home" component={HomeScreen} options={{ title: 'トップページ' }} />
-        <Stack.Screen name="Register" component={RegisterScreen} options={{ title: 'ユーザー登録' }} />
+        <Stack.Screen name="Auth" component={AuthScreen} options={{ title: '登録・ログイン' }} /> 
         <Stack.Screen name="Record" component={RecordScreen} options={{ title: '記録する' }} />
         <Stack.Screen name="MyPage" component={MyPageScreen} options={{ title: 'マイページ' }} />
       </Stack.Navigator>
     </NavigationContainer>
+  );
+};
+
+// AuthProviderでAppNavigatorをラップ
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppNavigator />
+    </AuthProvider>
   );
 }

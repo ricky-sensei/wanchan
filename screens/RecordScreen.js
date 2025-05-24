@@ -3,8 +3,11 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, Button, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import * as Location from 'expo-location';
 import { db } from '../firebaseConfig';
+import { useAuth } from '../contexts/AuthContext'; // useAuthをインポート
 
 const RecordScreen = () => {
+  const { currentUser, userProfile } = useAuth(); // 認証状態とユーザープロフィールを取得
+
   const [comment, setComment] = useState('');
   const [location, setLocation] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -27,6 +30,11 @@ const RecordScreen = () => {
       return;
     }
 
+    if (!currentUser || !userProfile) {
+      Alert.alert('認証エラー', '記録を投稿するにはログインが必要です。');
+      return;
+    }
+
     setLoading(true);
     try {
       let currentLocation = await Location.getCurrentPositionAsync({});
@@ -37,10 +45,8 @@ const RecordScreen = () => {
         latitude: currentLocation.coords.latitude,
         longitude: currentLocation.coords.longitude,
         timestamp: new Date(),
-        // TODO: ここにユーザーIDを追加する。現在の実装ではユーザーが特定できないため、
-        // 登録画面でユーザーIDを生成し、それをローカルストレージなどに保存して
-        // ここで参照する必要があります。今回は単純化のため省略。
-        // 例: userId: "some_user_id"
+        userId: userProfile.userId, // ログインユーザーの8桁のuserIdを紐付け
+        firebaseUid: currentUser.uid, // Firebase AuthenticationのUIDも紐付け (検索効率化のため)
       });
       Alert.alert('成功', 'コメントと位置情報が記録されました！');
       setComment('');
